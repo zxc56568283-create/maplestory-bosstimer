@@ -4,23 +4,33 @@
     <meta charset="UTF-8">
     <title>BOSS 計時器</title>
     <style>
-        body { background-color: #1a1a1a; color: #f0e6d2; font-family: sans-serif; }
-        .container { max-width: 1000px; margin: 0 auto; padding: 20px; }
-        .header { display: flex; justify-content: space-between; align-items: center; border-bottom: 1px solid #444; padding-bottom: 10px; }
+        * { box-sizing: border-box; margin: 0; padding: 0; }
+        body { background-color: #1a1a1a; color: #f0e6d2; font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif; padding: 20px; }
+        .container { max-width: 1200px; margin: 0 auto; }
+        .header { display: flex; justify-content: space-between; align-items: center; border-bottom: 1px solid #444; padding-bottom: 15px; }
         .grid { display: grid; grid-template-columns: repeat(6, 1fr); gap: 10px; margin-top: 20px; }
-        .channel-box { background-color: #2a2a2a; border: 1px solid #444; border-radius: 8px; padding: 15px; text-align: center; cursor: pointer; transition: 0.2s; }
+        .channel-box { background-color: #2a2a2a; border: 1px solid #444; border-radius: 8px; padding: 12px 8px; text-align: center; transition: 0.2s; }
         .channel-box:hover { background-color: #333; }
-        .ch-title { font-weight: bold; margin-bottom: 8px; color: #a8d08d; }
-        .status { font-size: 0.9em; color: #aaa; min-height: 20px; margin-bottom: 10px; }
+        .ch-title { font-weight: bold; margin-bottom: 6px; color: #a8d08d; font-size: 1.1em; }
+        .status { font-size: 0.85em; color: #aaa; min-height: 24px; display: flex; align-items: center; justify-content: center; margin-bottom: 8px; }
         
-        .status-monitoring { color: #f4b04f; } 
+        /* 狀態顏色 */
+        .status-monitoring { color: #f4b04f; font-weight: bold; } 
         .status-patrolled { color: #7db0ed; }  
         .status-dead { color: #ff6b6b; font-weight: bold; } 
-        .status-spawned { color: #a8d08d; font-weight: bold; } 
+        .status-spawned { color: #4ade80; font-weight: bold; } 
         
-        .action-btns { display: flex; flex-wrap: wrap; gap: 5px; justify-content: center; }
-        button { background: #444; color: white; border: none; padding: 4px 8px; border-radius: 4px; cursor: pointer; font-size: 0.8em; }
-        button:hover { background: #666; }
+        .action-btns { display: flex; gap: 4px; justify-content: center; }
+        button { background: #3d3d3d; color: white; border: 1px solid #555; padding: 4px 6px; border-radius: 4px; cursor: pointer; font-size: 0.75em; }
+        button:hover { background: #555; }
+        button:active { background: #222; }
+
+        @media (max-width: 900px) {
+            .grid { grid-template-columns: repeat(3, 1fr); }
+        }
+        @media (max-width: 500px) {
+            .grid { grid-template-columns: repeat(2, 1fr); }
+        }
     </style>
 </head>
 <body>
@@ -28,20 +38,17 @@
 <div class="container">
     <div class="header">
         <div>
-            <h2>巴洛古 (重生時間 240-360 分鐘)</h2>
-            <p>當前使用者：<span id="currentUser" style="color: #f4b04f;">未登入</span></p>
+            <h2>巴洛古 (重生週期 240-360 分鐘)</h2>
+            <p>當前操作者：<span id="currentUser" style="color: #f4b04f;">讀取中...</span></p>
         </div>
     </div>
     <div class="grid" id="channelGrid"></div>
 </div>
 
-<!-- 將 script type 設為 module，才能使用 Firebase 的 import 語法 -->
 <script type="module">
-    // 1. 引入 Firebase 核心與資料庫套件 (使用 CDN 網址)
     import { initializeApp } from "https://www.gstatic.com/firebasejs/10.4.0/firebase-app.js";
     import { getDatabase, ref, set, onValue } from "https://www.gstatic.com/firebasejs/10.4.0/firebase-database.js";
 
-    // 2. 你的 Firebase 連線設定
     const firebaseConfig = {
       apiKey: "AIzaSyAVPf4LDvIwdwDAOmLR5LCb2YOrHBKYQL0",
       authDomain: "boss-timer-eb97e.firebaseapp.com",
@@ -52,17 +59,16 @@
       appId: "1:132421383690:web:3dbe0a3aabbd275254d1f3"
     };
 
-    // 3. 初始化 Firebase
     const app = initializeApp(firebaseConfig);
     const db = getDatabase(app);
 
-    // --- 以下為計時器邏輯 ---
     let userName = "";
     const totalChannels = 60;
-    const respawnTimeMs = 240 * 60 * 1000; 
+    const respawnTimeMs = 240 * 60 * 1000; // 240 分鐘
     let channelsData = {}; 
+    const alertedChannels = new Set(); // 避免 5 分鐘提醒重複彈出
 
-    // 初始化介面
+    // 建立 60 個頻道格子
     function initChannels() {
         const grid = document.getElementById('channelGrid');
         grid.innerHTML = ""; 
@@ -83,70 +89,92 @@
     }
 
     // 登入
-    while (!userName) {
-        userName = prompt("請輸入您的遊戲 ID 以進入計時器：");
+    while (!userName || userName.trim() === "") {
+        userName = prompt("請輸入您的遊戲 ID：");
     }
     document.getElementById('currentUser').innerText = userName;
     initChannels();
 
-    // 【寫入資料到 Firebase】
-    // 監視
+    // 狀態 1：監視中 (包含操作者 ID)
     window.setMonitor = (ch) => {
-        set(ref(db, 'channels/' + ch), { state: 'monitoring', detail: `${userName} 監視中` });
+        alertedChannels.delete(ch);
+        set(ref(db, 'channels/' + ch), {
+            state: 'monitoring',
+            detail: `${userName} 監視中`,
+            targetTime: 0
+        });
     };
 
-    // 巡邏
+    // 狀態 2：巡邏過 (記錄當前時分)
     window.setPatrol = (ch) => {
+        alertedChannels.delete(ch);
         const now = new Date();
         const timeStr = `${now.getHours().toString().padStart(2, '0')}:${now.getMinutes().toString().padStart(2, '0')}`;
-        set(ref(db, 'channels/' + ch), { state: 'patrolled', detail: `${timeStr} 巡邏過` });
+        set(ref(db, 'channels/' + ch), {
+            state: 'patrolled',
+            detail: `${timeStr} 巡邏過`,
+            targetTime: 0
+        });
     };
 
-    // 擊殺 (記錄目標重生時間)
+    // 狀態 3：擊殺 (寫入重生目標時間戳)
     window.setDead = (ch) => {
+        alertedChannels.delete(ch);
         const targetTime = Date.now() + respawnTimeMs;
-        set(ref(db, 'channels/' + ch), { state: 'dead', targetTime: targetTime, detail: '計算中...' });
+        set(ref(db, 'channels/' + ch), {
+            state: 'dead',
+            targetTime: targetTime,
+            detail: '計算中...'
+        });
     };
 
-    // 【監聽 Firebase 資料變化，即時同步給大家】
+    // 監聽雲端資料庫異動
     onValue(ref(db, 'channels'), (snapshot) => {
-        const data = snapshot.val();
-        if (data) {
-            channelsData = data;
-            // 更新一般狀態畫面 (監視、巡邏)
-            for (let i = 1; i <= totalChannels; i++) {
-                if (data[i] && data[i].state !== 'dead') {
+        const data = snapshot.val() || {};
+        channelsData = data;
+        
+        for (let i = 1; i <= totalChannels; i++) {
+            if (data[i]) {
+                if (data[i].state !== 'dead') {
                     updateUI(i, data[i].state, data[i].detail);
                 }
+            } else {
+                updateUI(i, 'default', '未確認');
             }
         }
     });
 
-    // 【全域計時器】每秒檢查一次「倒數中」的頻道
+    // 本地倒數引擎 (每秒更新，精確計算剩餘毫秒)
     setInterval(() => {
+        const now = Date.now();
         for (let i = 1; i <= totalChannels; i++) {
-            if (channelsData[i] && channelsData[i].state === 'dead') {
-                const remainMs = channelsData[i].targetTime - Date.now();
-                
+            if (channelsData[i] && channelsData[i].state === 'dead' && channelsData[i].targetTime) {
+                const remainMs = channelsData[i].targetTime - now;
+
                 if (remainMs <= 0) {
                     updateUI(i, 'spawned', '已重生 / 可擊殺');
                 } else {
                     const remainMins = Math.floor(remainMs / 60000);
                     const remainSecs = Math.floor((remainMs % 60000) / 1000);
                     updateUI(i, 'dead', `倒數: ${remainMins}分 ${remainSecs}秒`);
+
+                    // 重生前 5 分鐘 (剩餘時間介於 0 到 300 秒之間觸發提醒)
+                    if (remainMs <= 5 * 60 * 1000 && !alertedChannels.has(i)) {
+                        alertedChannels.add(i);
+                        alert(`【注意】CH ${i} 的 BOSS 將在 5 分鐘內重生！`);
+                    }
                 }
             }
         }
     }, 1000);
 
-    // 負責改變字體顏色的工具函式
     function updateUI(ch, state, detailText) {
         const statusDiv = document.getElementById(`status-${ch}`);
-        if(statusDiv) {
+        if (statusDiv) {
             statusDiv.className = `status status-${state}`;
             statusDiv.innerText = detailText;
         }
     }
-<script type="module" src="app.js"></script>
+</script>
 </body>
 </html>
