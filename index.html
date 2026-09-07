@@ -1,0 +1,152 @@
+<!DOCTYPE html>
+<html lang="zh-TW">
+<head>
+    <meta charset="UTF-8">
+    <title>BOSS 計時器</title>
+    <style>
+        body { background-color: #1a1a1a; color: #f0e6d2; font-family: sans-serif; }
+        .container { max-width: 1000px; margin: 0 auto; padding: 20px; }
+        .header { display: flex; justify-content: space-between; align-items: center; border-bottom: 1px solid #444; padding-bottom: 10px; }
+        .grid { display: grid; grid-template-columns: repeat(6, 1fr); gap: 10px; margin-top: 20px; }
+        .channel-box { background-color: #2a2a2a; border: 1px solid #444; border-radius: 8px; padding: 15px; text-align: center; cursor: pointer; transition: 0.2s; }
+        .channel-box:hover { background-color: #333; }
+        .ch-title { font-weight: bold; margin-bottom: 8px; color: #a8d08d; }
+        .status { font-size: 0.9em; color: #aaa; min-height: 20px; margin-bottom: 10px; }
+        
+        .status-monitoring { color: #f4b04f; } 
+        .status-patrolled { color: #7db0ed; }  
+        .status-dead { color: #ff6b6b; font-weight: bold; } 
+        .status-spawned { color: #a8d08d; font-weight: bold; } 
+        
+        .action-btns { display: flex; flex-wrap: wrap; gap: 5px; justify-content: center; }
+        button { background: #444; color: white; border: none; padding: 4px 8px; border-radius: 4px; cursor: pointer; font-size: 0.8em; }
+        button:hover { background: #666; }
+    </style>
+</head>
+<body>
+
+<div class="container">
+    <div class="header">
+        <div>
+            <h2>巴洛古 (重生時間 240-360 分鐘)</h2>
+            <p>當前使用者：<span id="currentUser" style="color: #f4b04f;">未登入</span></p>
+        </div>
+    </div>
+    <div class="grid" id="channelGrid"></div>
+</div>
+
+<!-- 將 script type 設為 module，才能使用 Firebase 的 import 語法 -->
+<script type="module">
+    // 1. 引入 Firebase 核心與資料庫套件 (使用 CDN 網址)
+    import { initializeApp } from "https://www.gstatic.com/firebasejs/10.4.0/firebase-app.js";
+    import { getDatabase, ref, set, onValue } from "https://www.gstatic.com/firebasejs/10.4.0/firebase-database.js";
+
+    // 2. 你的 Firebase 連線設定
+    const firebaseConfig = {
+      apiKey: "AIzaSyAVPf4LDvIwdwDAOmLR5LCb2YOrHBKYQL0",
+      authDomain: "boss-timer-eb97e.firebaseapp.com",
+      databaseURL: "https://boss-timer-eb97e-default-rtdb.asia-southeast1.firebasedatabase.app",
+      projectId: "boss-timer-eb97e",
+      storageBucket: "boss-timer-eb97e.firebasestorage.app",
+      messagingSenderId: "132421383690",
+      appId: "1:132421383690:web:3dbe0a3aabbd275254d1f3"
+    };
+
+    // 3. 初始化 Firebase
+    const app = initializeApp(firebaseConfig);
+    const db = getDatabase(app);
+
+    // --- 以下為計時器邏輯 ---
+    let userName = "";
+    const totalChannels = 60;
+    const respawnTimeMs = 240 * 60 * 1000; 
+    let channelsData = {}; 
+
+    // 初始化介面
+    function initChannels() {
+        const grid = document.getElementById('channelGrid');
+        grid.innerHTML = ""; 
+        for (let i = 1; i <= totalChannels; i++) {
+            const box = document.createElement('div');
+            box.className = 'channel-box';
+            box.innerHTML = `
+                <div class="ch-title">CH ${i}</div>
+                <div class="status" id="status-${i}">未確認</div>
+                <div class="action-btns">
+                    <button onclick="window.setMonitor(${i})">監視</button>
+                    <button onclick="window.setPatrol(${i})">巡邏</button>
+                    <button onclick="window.setDead(${i})">擊殺</button>
+                </div>
+            `;
+            grid.appendChild(box);
+        }
+    }
+
+    // 登入
+    while (!userName) {
+        userName = prompt("請輸入您的遊戲 ID 以進入計時器：");
+    }
+    document.getElementById('currentUser').innerText = userName;
+    initChannels();
+
+    // 【寫入資料到 Firebase】
+    // 監視
+    window.setMonitor = (ch) => {
+        set(ref(db, 'channels/' + ch), { state: 'monitoring', detail: `${userName} 監視中` });
+    };
+
+    // 巡邏
+    window.setPatrol = (ch) => {
+        const now = new Date();
+        const timeStr = `${now.getHours().toString().padStart(2, '0')}:${now.getMinutes().toString().padStart(2, '0')}`;
+        set(ref(db, 'channels/' + ch), { state: 'patrolled', detail: `${timeStr} 巡邏過` });
+    };
+
+    // 擊殺 (記錄目標重生時間)
+    window.setDead = (ch) => {
+        const targetTime = Date.now() + respawnTimeMs;
+        set(ref(db, 'channels/' + ch), { state: 'dead', targetTime: targetTime, detail: '計算中...' });
+    };
+
+    // 【監聽 Firebase 資料變化，即時同步給大家】
+    onValue(ref(db, 'channels'), (snapshot) => {
+        const data = snapshot.val();
+        if (data) {
+            channelsData = data;
+            // 更新一般狀態畫面 (監視、巡邏)
+            for (let i = 1; i <= totalChannels; i++) {
+                if (data[i] && data[i].state !== 'dead') {
+                    updateUI(i, data[i].state, data[i].detail);
+                }
+            }
+        }
+    });
+
+    // 【全域計時器】每秒檢查一次「倒數中」的頻道
+    setInterval(() => {
+        for (let i = 1; i <= totalChannels; i++) {
+            if (channelsData[i] && channelsData[i].state === 'dead') {
+                const remainMs = channelsData[i].targetTime - Date.now();
+                
+                if (remainMs <= 0) {
+                    updateUI(i, 'spawned', '已重生 / 可擊殺');
+                } else {
+                    const remainMins = Math.floor(remainMs / 60000);
+                    const remainSecs = Math.floor((remainMs % 60000) / 1000);
+                    updateUI(i, 'dead', `倒數: ${remainMins}分 ${remainSecs}秒`);
+                }
+            }
+        }
+    }, 1000);
+
+    // 負責改變字體顏色的工具函式
+    function updateUI(ch, state, detailText) {
+        const statusDiv = document.getElementById(`status-${ch}`);
+        if(statusDiv) {
+            statusDiv.className = `status status-${state}`;
+            statusDiv.innerText = detailText;
+        }
+    }
+<script type="module" src="app.js"></script>
+</body>
+</html>
