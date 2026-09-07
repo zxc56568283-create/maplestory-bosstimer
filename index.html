@@ -12,18 +12,23 @@
         .channel-box { background-color: #2a2a2a; border: 1px solid #444; border-radius: 8px; padding: 12px 8px; text-align: center; transition: 0.2s; }
         .channel-box:hover { background-color: #333; }
         .ch-title { font-weight: bold; margin-bottom: 6px; color: #a8d08d; font-size: 1.1em; }
-        .status { font-size: 0.85em; color: #aaa; min-height: 24px; display: flex; align-items: center; justify-content: center; margin-bottom: 8px; }
+        
+        /* 獨立狀態顯示區塊 */
+        .status-group { background: #1f1f1f; border-radius: 4px; padding: 6px; margin-bottom: 10px; display: flex; flex-direction: column; gap: 4px; font-size: 0.85em; }
         
         /* 狀態顏色 */
-        .status-monitoring { color: #f4b04f; font-weight: bold; } 
-        .status-patrolled { color: #7db0ed; }  
-        .status-dead { color: #ff6b6b; font-weight: bold; } 
-        .status-spawned { color: #4ade80; font-weight: bold; } 
+        .st-dead { color: #ff6b6b; font-weight: bold; min-height: 18px; } 
+        .st-spawned { color: #4ade80; font-weight: bold; min-height: 18px; } 
+        .st-monitor { color: #f4b04f; min-height: 18px; } 
+        .st-patrol { color: #7db0ed; min-height: 18px; }  
+        .st-none { color: #666; min-height: 18px; } /* 空白未確認狀態 */
         
-        .action-btns { display: flex; gap: 4px; justify-content: center; }
+        .action-btns { display: flex; flex-wrap: wrap; gap: 4px; justify-content: center; }
         button { background: #3d3d3d; color: white; border: 1px solid #555; padding: 4px 6px; border-radius: 4px; cursor: pointer; font-size: 0.75em; }
         button:hover { background: #555; }
         button:active { background: #222; }
+        .btn-clear { background: #6b3a3a; border-color: #884444; }
+        .btn-clear:hover { background: #884444; }
 
         @media (max-width: 900px) {
             .grid { grid-template-columns: repeat(3, 1fr); }
@@ -47,7 +52,8 @@
 
 <script type="module">
     import { initializeApp } from "https://www.gstatic.com/firebasejs/10.4.0/firebase-app.js";
-    import { getDatabase, ref, set, onValue } from "https://www.gstatic.com/firebasejs/10.4.0/firebase-database.js";
+    // 這裡引入 update 來替換原本的 set
+    import { getDatabase, ref, update, onValue, set } from "https://www.gstatic.com/firebasejs/10.4.0/firebase-database.js";
 
     const firebaseConfig = {
       apiKey: "AIzaSyAVPf4LDvIwdwDAOmLR5LCb2YOrHBKYQL0",
@@ -64,101 +70,119 @@
 
     let userName = "";
     const totalChannels = 60;
-    const respawnTimeMs = 240 * 60 * 1000; // 240 分鐘
+    const respawnTimeMs = 240 * 60 * 1000; 
     let channelsData = {}; 
-    const alertedChannels = new Set(); // 避免 5 分鐘提醒重複彈出
+    const alertedChannels = new Set(); 
 
-    // 建立 60 個頻道格子
     function initChannels() {
         const grid = document.getElementById('channelGrid');
         grid.innerHTML = ""; 
         for (let i = 1; i <= totalChannels; i++) {
             const box = document.createElement('div');
             box.className = 'channel-box';
+            // 將狀態區塊分成 3 行，各自獨立
             box.innerHTML = `
                 <div class="ch-title">CH ${i}</div>
-                <div class="status" id="status-${i}">未確認</div>
+                <div class="status-group">
+                    <div id="dead-${i}" class="st-none">- 計時未啟動 -</div>
+                    <div id="monitor-${i}" class="st-none">- 無監視 -</div>
+                    <div id="patrol-${i}" class="st-none">- 未巡邏 -</div>
+                </div>
                 <div class="action-btns">
                     <button onclick="window.setMonitor(${i})">監視</button>
                     <button onclick="window.setPatrol(${i})">巡邏</button>
                     <button onclick="window.setDead(${i})">擊殺</button>
+                    <button class="btn-clear" onclick="window.clearCh(${i})">清除</button>
                 </div>
             `;
             grid.appendChild(box);
         }
     }
 
-    // 登入
     while (!userName || userName.trim() === "") {
         userName = prompt("請輸入您的遊戲 ID：");
     }
     document.getElementById('currentUser').innerText = userName;
     initChannels();
 
-    // 狀態 1：監視中 (包含操作者 ID)
+    // --- 使用 update 只更新特定欄位，互不覆蓋 ---
+
     window.setMonitor = (ch) => {
-        alertedChannels.delete(ch);
-        set(ref(db, 'channels/' + ch), {
-            state: 'monitoring',
-            detail: `${userName} 監視中`,
-            targetTime: 0
-        });
+        // 只更新 monitor 欄位
+        update(ref(db, 'channels/' + ch), { monitor: `${userName} 監視中` });
     };
 
-    // 狀態 2：巡邏過 (記錄當前時分)
     window.setPatrol = (ch) => {
-        alertedChannels.delete(ch);
         const now = new Date();
         const timeStr = `${now.getHours().toString().padStart(2, '0')}:${now.getMinutes().toString().padStart(2, '0')}`;
-        set(ref(db, 'channels/' + ch), {
-            state: 'patrolled',
-            detail: `${timeStr} 巡邏過`,
-            targetTime: 0
-        });
+        // 只更新 patrol 欄位
+        update(ref(db, 'channels/' + ch), { patrol: `${timeStr} 巡邏過` });
     };
 
-    // 狀態 3：擊殺 (寫入重生目標時間戳)
     window.setDead = (ch) => {
         alertedChannels.delete(ch);
         const targetTime = Date.now() + respawnTimeMs;
-        set(ref(db, 'channels/' + ch), {
-            state: 'dead',
-            targetTime: targetTime,
-            detail: '計算中...'
-        });
+        // 只更新倒數時間欄位
+        update(ref(db, 'channels/' + ch), { targetTime: targetTime });
     };
 
-    // 監聽雲端資料庫異動
+    // 清除按鈕 (把該頻道的所有狀態歸零)
+    window.clearCh = (ch) => {
+        alertedChannels.delete(ch);
+        set(ref(db, 'channels/' + ch), { monitor: null, patrol: null, targetTime: null });
+    };
+
+    // --- 監聽資料庫，各自更新對應的文字 ---
     onValue(ref(db, 'channels'), (snapshot) => {
         const data = snapshot.val() || {};
         channelsData = data;
         
         for (let i = 1; i <= totalChannels; i++) {
-            if (data[i]) {
-                if (data[i].state !== 'dead') {
-                    updateUI(i, data[i].state, data[i].detail);
-                }
+            const chData = data[i] || {};
+            
+            // 處理監視狀態
+            const monDiv = document.getElementById(`monitor-${i}`);
+            if (chData.monitor) {
+                monDiv.className = 'st-monitor'; monDiv.innerText = chData.monitor;
             } else {
-                updateUI(i, 'default', '未確認');
+                monDiv.className = 'st-none'; monDiv.innerText = '- 無監視 -';
+            }
+
+            // 處理巡邏狀態
+            const patDiv = document.getElementById(`patrol-${i}`);
+            if (chData.patrol) {
+                patDiv.className = 'st-patrol'; patDiv.innerText = chData.patrol;
+            } else {
+                patDiv.className = 'st-none'; patDiv.innerText = '- 未巡邏 -';
+            }
+
+            // 如果沒有計時，顯示未啟動
+            if (!chData.targetTime) {
+                const deadDiv = document.getElementById(`dead-${i}`);
+                deadDiv.className = 'st-none'; 
+                deadDiv.innerText = '- 計時未啟動 -';
             }
         }
     });
 
-    // 本地倒數引擎 (每秒更新，精確計算剩餘毫秒)
+    // --- 本地計時器 (只管倒數的那一行) ---
     setInterval(() => {
         const now = Date.now();
         for (let i = 1; i <= totalChannels; i++) {
-            if (channelsData[i] && channelsData[i].state === 'dead' && channelsData[i].targetTime) {
-                const remainMs = channelsData[i].targetTime - now;
+            const chData = channelsData[i] || {};
+            if (chData.targetTime) {
+                const deadDiv = document.getElementById(`dead-${i}`);
+                const remainMs = chData.targetTime - now;
 
                 if (remainMs <= 0) {
-                    updateUI(i, 'spawned', '已重生 / 可擊殺');
+                    deadDiv.className = 'st-spawned';
+                    deadDiv.innerText = '已重生 / 可擊殺';
                 } else {
                     const remainMins = Math.floor(remainMs / 60000);
                     const remainSecs = Math.floor((remainMs % 60000) / 1000);
-                    updateUI(i, 'dead', `倒數: ${remainMins}分 ${remainSecs}秒`);
+                    deadDiv.className = 'st-dead';
+                    deadDiv.innerText = `重生倒數: ${remainMins}分 ${remainSecs}秒`;
 
-                    // 重生前 5 分鐘 (剩餘時間介於 0 到 300 秒之間觸發提醒)
                     if (remainMs <= 5 * 60 * 1000 && !alertedChannels.has(i)) {
                         alertedChannels.add(i);
                         alert(`【注意】CH ${i} 的 BOSS 將在 5 分鐘內重生！`);
@@ -167,14 +191,6 @@
             }
         }
     }, 1000);
-
-    function updateUI(ch, state, detailText) {
-        const statusDiv = document.getElementById(`status-${ch}`);
-        if (statusDiv) {
-            statusDiv.className = `status status-${state}`;
-            statusDiv.innerText = detailText;
-        }
-    }
 </script>
 </body>
 </html>
